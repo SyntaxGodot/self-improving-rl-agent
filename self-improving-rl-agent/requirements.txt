@@ -1,0 +1,32 @@
+# Core Deep Learning & Reinforcement Learning
+torch>=2.2.0
+torchvision>=0.17.0
+gymnasium>=0.29.1
+numpy>=1.26.0
+scipy>=1.11.0
+
+# AutoML, Optimization & Vector Search
+faiss-cpu>=1.8.0
+scikit-learn>=1.4.0
+optuna>=3.5.0
+
+# Configuration, Serialization & Validation
+pyyaml>=6.0.1
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+
+# Observability, Tracking & Logging
+tensorboard>=2.16.0
+tqdm>=4.66.0
+loguru>=0.7.2
+
+# Interfaces: CLI, REST API & Dashboard
+typer[all]>=0.9.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+streamlit>=1.32.0
+matplotlib>=3.8.0
+pandas>=2.2.0
+
+# Storage & Persistence
+sqlalchemy>=2.0.28
