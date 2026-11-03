@@ -1,26 +1,19 @@
-"""PPO Agent — orchestrates policy, memory, and updates."""
+﻿"""PPO Agent — orchestrates policy, memory, and self-improving updates."""
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import Tuple
+from typing import Tuple, Dict, Any
+import numpy as np
 
 from src.domain.rl.policy import PolicyNetwork
 from src.domain.rl.memory import RolloutBuffer
 from src.domain.entities.state import State
 from src.domain.entities.action import Action, ACTION_SPACE_SIZE
 
-
 class PPOAgent:
     """
-    Proximal Policy Optimization agent for AutoML search.
-
-    Hyperparameters:
-        clip_eps   – PPO clipping parameter (ε)
-        vf_coef    – value function loss coefficient
-        ent_coef   – entropy bonus coefficient
-        ppo_epochs – number of gradient steps per update
-        gamma      – discount factor
-        lr         – learning rate
+    Self-Improving Proximal Policy Optimization agent.
+    Features GAE, ResNet backbone, and automatic hyperparameter mutation.
     """
 
     def __init__(
@@ -34,6 +27,7 @@ class PPOAgent:
         ent_coef: float = 0.01,
         ppo_epochs: int = 4,
         gamma: float = 0.99,
+        lam: float = 0.95,
         device: str = "cpu",
     ):
         self.device     = torch.device(device)
@@ -42,17 +36,20 @@ class PPOAgent:
         self.ent_coef   = ent_coef
         self.ppo_epochs = ppo_epochs
         self.gamma      = gamma
+        self.lam        = lam
 
         self.policy  = PolicyNetwork(state_dim, action_dim, hidden).to(self.device)
         self.buffer  = RolloutBuffer()
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        
+        # Professional Learning Rate Scheduler
+        self.scheduler = optim.lr_scheduler.LinearLR(self.optimizer, start_factor=1.0, end_factor=0.1, total_iters=1000)
 
         self.total_updates = 0
-
-    # ── Acting ────────────────────────────────────────────────────────────────
+        self.reward_history = []
+        self.best_avg_reward = -float("inf")
 
     def act(self, state: State) -> Tuple[Action, torch.Tensor, torch.Tensor]:
-        """Select an action given the current state."""
         state_vec = torch.tensor(state.to_vector(), dtype=torch.float32).to(self.device)
         action_idx, log_prob, value = self.policy.act(state_vec)
         return Action.from_index(action_idx), log_prob, value
@@ -61,17 +58,17 @@ class PPOAgent:
         state_vec = torch.tensor(state.to_vector(), dtype=torch.float32)
         self.buffer.add(state_vec, action.action_type.value, log_prob, value, reward, done)
 
-    # ── Updating ──────────────────────────────────────────────────────────────
-
-    def update(self) -> dict:
-        """Run PPO update on the collected rollout."""
+    def update(self, last_value: torch.Tensor = torch.tensor(0.0)) -> dict:
+        """Run PPO update with GAE and Self-Improving logic."""
         if len(self.buffer) == 0:
             return {}
 
-        states, actions, old_log_probs, returns, advantages = self.buffer.to_tensors(self.gamma)
-        states      = states.to(self.device)
-        actions     = actions.to(self.device)
-        old_log_probs = old_log_probs.detach().to(self.device)
+        # 1. Compute GAE Returns and Advantages
+        returns, advantages = self.buffer.to_tensors(self.gamma, self.lam, last_value.to(self.device))
+        
+        states      = torch.stack([t.state for t in self.buffer.transitions]).to(self.device)
+        actions     = torch.tensor([t.action for t in self.buffer.transitions], dtype=torch.long).to(self.device)
+        old_log_probs = torch.stack([t.log_prob for t in self.buffer.transitions]).detach().to(self.device)
         returns     = returns.to(self.device)
         advantages  = advantages.to(self.device)
 
@@ -89,7 +86,7 @@ class PPOAgent:
             # Value loss
             value_loss = nn.MSELoss()(values, returns)
 
-            # Total loss
+            # Total loss (with entropy bonus for exploration)
             loss = policy_loss + self.vf_coef * value_loss - self.ent_coef * entropy.mean()
 
             self.optimizer.zero_grad()
@@ -101,12 +98,33 @@ class PPOAgent:
             metrics["value_loss"]  += value_loss.item()
             metrics["entropy"]     += entropy.mean().item()
 
+        self.scheduler.step()
         self.buffer.clear()
         self.total_updates += 1
+        
         n = self.ppo_epochs
         return {k: v / n for k, v in metrics.items()}
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Self-Improving Meta-Learning ─────────────────────────────────────────────
+
+    def evolve_hyperparameters(self, current_avg_reward: float):
+        """
+        Automatic Hyperparameter Mutation.
+        If reward plateaus, mutate gamma or clip_eps to explore new policy spaces.
+        """
+        self.reward_history.append(current_avg_reward)
+        if len(self.reward_history) < 10: return
+
+        # Check for plateau (last 10 episodes have < 1% improvement)
+        recent = self.reward_history[-10:]
+        improvement = (recent[-1] - recent[0]) / (abs(recent[0]) + 1e-6)
+        
+        if improvement < 0.01:
+            logger.info("Plateau detected. Mutating hyperparameters for self-improvement...")
+            # Mutate gamma (discount factor) and clip_eps
+            self.gamma = np.clip(self.gamma * np.random.uniform(0.95, 1.05), 0.9, 0.999)
+            self.clip_eps = np.clip(self.clip_eps * np.random.uniform(0.9, 1.1), 0.1, 0.3)
+            logger.info(f"New params: gamma={self.gamma:.4f}, clip_eps={self.clip_eps:.4f}")
 
     def save(self, path: str):
         torch.save({"policy": self.policy.state_dict(), "updates": self.total_updates}, path)

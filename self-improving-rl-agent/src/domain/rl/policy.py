@@ -1,27 +1,45 @@
-"""Policy network — actor-critic for PPO."""
+﻿"""Policy network — actor-critic for PPO with ResNet backbone."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from typing import Tuple
 
+class ResBlock(nn.Module):
+    """Residual block to prevent vanishing gradients and improve depth."""
+    def __init__(self, dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim)
+        )
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(x + self.net(x))
 
 class PolicyNetwork(nn.Module):
     """
     Actor-Critic network for PPO.
-    Shared backbone → separate actor (policy) and critic (value) heads.
+    Implements a Residual backbone with LayerNorm for high stability.
     """
 
     def __init__(self, state_dim: int, action_dim: int, hidden: int = 128):
         super().__init__()
 
-        # Shared encoder
-        self.backbone = nn.Sequential(
+        # Professional Backbone: Linear -> LayerNorm -> ResBlocks
+        self.input_layer = nn.Sequential(
             nn.Linear(state_dim, hidden),
             nn.LayerNorm(hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            nn.ReLU()
+        )
+        
+        self.res_blocks = nn.Sequential(
+            ResBlock(hidden),
+            ResBlock(hidden)
         )
 
         # Actor head — outputs action logits
@@ -35,19 +53,19 @@ class PolicyNetwork(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=0.01)
+                # Professional orthogonal initialization
+                gain = 0.01 if m == self.actor else 1.0
+                nn.init.orthogonal_(m.weight, gain=gain)
                 nn.init.zeros_(m.bias)
 
     def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns (action_logits, state_value)."""
-        x = self.backbone(state)
+        x = self.input_layer(state)
+        x = self.res_blocks(x)
         return self.actor(x), self.critic(x).squeeze(-1)
 
     def act(self, state: torch.Tensor) -> Tuple[int, torch.Tensor, torch.Tensor]:
-        """
-        Sample an action from the policy.
-        Returns (action_index, log_prob, value).
-        """
+        """Sample an action from the policy."""
         logits, value = self(state)
         dist = Categorical(logits=logits)
         action = dist.sample()
@@ -56,10 +74,7 @@ class PolicyNetwork(nn.Module):
     def evaluate(
         self, states: torch.Tensor, actions: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Evaluate actions for PPO update.
-        Returns (log_probs, values, entropy).
-        """
+        """Evaluate actions for PPO update."""
         logits, values = self(states)
         dist = Categorical(logits=logits)
         log_probs = dist.log_prob(actions)

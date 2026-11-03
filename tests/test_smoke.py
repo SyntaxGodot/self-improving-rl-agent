@@ -10,3 +10,4 @@ def test_python_version():
 def test_environment_smoke():
     """Basic sanity check for test discovery."""
     assert True
+

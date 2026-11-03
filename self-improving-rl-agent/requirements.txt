@@ -30,3 +30,4 @@ pandas>=2.2.0
 
 # Storage & Persistence
 sqlalchemy>=2.0.28
+
